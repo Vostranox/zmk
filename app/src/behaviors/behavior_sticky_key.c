@@ -54,6 +54,7 @@ struct active_sticky_key {
     // usage page and keycode for the key that is being modified by this sticky key
     uint8_t modified_key_usage_page;
     uint32_t modified_key_keycode;
+    bool is_held;
 };
 
 struct active_sticky_key active_sticky_keys[ZMK_BHV_STICKY_KEY_MAX_HELD] = {};
@@ -79,6 +80,7 @@ static struct active_sticky_key *store_sticky_key(struct zmk_behavior_binding_ev
         sticky_key->timer_started = false;
         sticky_key->modified_key_usage_page = 0;
         sticky_key->modified_key_keycode = 0;
+        sticky_key->is_held = true;
         return sticky_key;
     }
     return NULL;
@@ -86,6 +88,7 @@ static struct active_sticky_key *store_sticky_key(struct zmk_behavior_binding_ev
 
 static void clear_sticky_key(struct active_sticky_key *sticky_key) {
     sticky_key->position = ZMK_BHV_STICKY_KEY_POSITION_FREE;
+    sticky_key->is_held = false;
 }
 
 static struct active_sticky_key *find_sticky_key(uint32_t position) {
@@ -95,6 +98,16 @@ static struct active_sticky_key *find_sticky_key(uint32_t position) {
         }
     }
     return NULL;
+}
+
+static bool is_any_sticky_key_held() {
+    for (int i = 0; i < ZMK_BHV_STICKY_KEY_MAX_HELD; i++) {
+        if (active_sticky_keys[i].position != ZMK_BHV_STICKY_KEY_POSITION_FREE &&
+            active_sticky_keys[i].is_held) {
+                return true;
+            }
+    }
+    return false;
 }
 
 static inline int press_sticky_key_behavior(struct active_sticky_key *sticky_key,
@@ -184,8 +197,16 @@ static int on_sticky_key_binding_released(struct zmk_behavior_binding *binding,
         return ZMK_BEHAVIOR_OPAQUE;
     }
 
+    sticky_key->is_held = false;
+
     if (sticky_key->modified_key_usage_page != 0 && sticky_key->modified_key_keycode != 0) {
         LOG_DBG("Another key was pressed while the sticky key was pressed. Act like a normal key.");
+        for (int i = 0; i < ZMK_BHV_STICKY_KEY_MAX_HELD; i++) {
+            struct active_sticky_key *sk = &active_sticky_keys[i];
+            if (sk->modified_key_usage_page != 0 && sk->modified_key_keycode != 0) {
+                release_sticky_key_behavior(sk, event.timestamp);
+            }
+        }
         return release_sticky_key_behavior(sticky_key, event.timestamp);
     }
 
@@ -314,7 +335,8 @@ static int sticky_key_keycode_state_changed_listener(const zmk_event_t *eh) {
         } else { // key up
             if (sticky_key->timer_started &&
                 sticky_key->modified_key_usage_page == ev_copy.usage_page &&
-                sticky_key->modified_key_keycode == ev_copy.keycode) {
+                sticky_key->modified_key_keycode == ev_copy.keycode &&
+                !is_any_sticky_key_held()) {
                 stop_timer(sticky_key);
                 sticky_keys_to_release_after_reraise[i] = sticky_key;
             }
